@@ -61,11 +61,11 @@ if not st.session_state.logged_in and url_token:
         st.toast(f"欢迎回来，{config['users'][url_token]['name']}")
 
 if not st.session_state.logged_in:
-    st.title("🚀 团队任务管理系统")
+    st.title("合泰包装盒有限公司")
     user_names = [info["name"] for uid, info in config["users"].items()]
-    selected_name = st.selectbox("选择角色", user_names)
+    selected_name = st.selectbox("账户", user_names)
     pwd = st.text_input("密码", type="password")
-    remember_me = st.checkbox("✅ 记住我 (刷新免登录)")
+    remember_me = st.checkbox("记住我 (刷新免登录)")
 
     if st.button("登录", type="primary"):
         uid = get_id_by_name(config, selected_name)
@@ -104,20 +104,20 @@ else:
         df = pd.DataFrame(columns=["日期", "店铺", "负责人", "任务内容", "状态", "完成时间"])
 
     if is_admin:
-        tab1, tab2, tab3 = st.tabs(["📊 任务控制台", "🔗 灵活分配表", "⚙️ 人员与店铺管理"])
+        tab1, tab2, tab3 = st.tabs(["📊 任务控制台", "🔗工作规划", "⚙️ 人员与店铺管理"])
         
         # === Tab 1: 任务发布 ===
         with tab1:
             col1, col2 = st.columns([3, 1])
             with col1:
-                st.subheader("1️⃣ 每日一键派单")
+                st.subheader("每日工作")
                 st.caption("系统会自动过滤掉已删除的店铺或员工，只生成有效的任务。")
             with col2:
-                 if st.button("🗑️ 清空历史记录"):
+                 if st.button("清空历史记录"):
                      pd.DataFrame(columns=["日期", "店铺", "负责人", "任务内容", "状态", "完成时间"]).to_csv(DB_FILE, index=False)
                      st.rerun()
 
-            if st.button("⚡ 生成今日任务", type="primary"):
+            if st.button("生成今日任务", type="primary"):
                 today = datetime.now().strftime("%Y-%m-%d")
                 new_rows = []
                 count = 0
@@ -147,7 +147,7 @@ else:
                     st.warning("没有可生成的任务，请检查分配表或店铺/人员名单。")
 
             st.divider()
-            with st.expander("➕ 发布临时任务"):
+            with st.expander("发布临时任务"):
                 c1, c2, c3 = st.columns(3)
                 with c1: t_store = st.selectbox("店铺", config["stores"])
                 with c2: t_user = st.selectbox("给谁", [u["name"] for k,u in config["users"].items() if u["role"] != "admin"])
@@ -264,3 +264,4 @@ else:
                             st.rerun()
                     else:
                         c3.write(f"已完成 {row['完成时间']}")
+
