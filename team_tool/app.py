@@ -6,11 +6,12 @@ import json
 import uuid
 
 # ================= 1. 核心配置 =================
-CONFIG_FILE = "config_v6.json"
+CONFIG_FILE = "config_v7.json"
 TASK_DB = "tasks.csv"
-PRODUCT_DB = "products.csv" # 新增：产品数据库
+# 这里的 TABLES_FILE 是一个“大仓库”，里面存放你所有的自定义表格数据
+TABLES_FILE = "custom_tables.json" 
 
-# 默认配置 (保留了你熟悉的结构)
+# 默认配置
 DEFAULT_CONFIG = {
     "users": {
         "u_boss": {"name": "Boss", "pwd": "666", "role": "admin"},
@@ -18,21 +19,22 @@ DEFAULT_CONFIG = {
         "u_002": {"name": "小李", "pwd": "222", "role": "staff"}
     },
     "stores": ["TikTok店铺-01", "TikTok店铺-02", "TikTok店铺-03", "TikTok店铺-04"],
-    "assignments": [], # 你的灵活分配数据存在这里
-    "product_access": [] # 新增：谁能看产品库的白名单
+    "assignments": []
 }
 
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        return DEFAULT_CONFIG
-    with open(CONFIG_FILE, "r", encoding='utf-8') as f:
-        config = json.load(f)
-        if "product_access" not in config: config["product_access"] = []
-        return config
+# --- 加载与保存函数 ---
+def load_json(filepath, default=None):
+    if not os.path.exists(filepath):
+        return default if default is not None else {}
+    try:
+        with open(filepath, "r", encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return default if default is not None else {}
 
-def save_config(config):
-    with open(CONFIG_FILE, "w", encoding='utf-8') as f:
-        json.dump(config, f, ensure_ascii=False, indent=4)
+def save_json(filepath, data):
+    with open(filepath, "w", encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
 
 def get_name_by_id(config, uid):
     return config["users"].get(uid, {}).get("name", "❌已删除")
@@ -42,17 +44,17 @@ def get_id_by_name(config, name):
         if info["name"] == name: return uid
     return None
 
-config = load_config()
+# 加载数据
+config = load_json(CONFIG_FILE, DEFAULT_CONFIG)
+# 加载自定义表格库 (结构: {"表名": {"data": [行数据], "users": [允许看的人UID]}})
+tables_db = load_json(TABLES_FILE, {})
 
-# 初始化两个数据库
 if not os.path.exists(TASK_DB):
     pd.DataFrame(columns=["日期", "店铺", "负责人", "任务内容", "状态", "完成时间"]).to_csv(TASK_DB, index=False)
-if not os.path.exists(PRODUCT_DB):
-    pd.DataFrame(columns=["货号", "产品名称", "成本价(CNY)", "售价(USD)", "供应商", "备注"]).to_csv(PRODUCT_DB, index=False)
 
-st.set_page_config(page_title="吴先生团队系统 (集成版)", layout="wide")
+st.set_page_config(page_title="吴先生团队超级系统", layout="wide")
 
-# ================= 2. 登录系统 (你喜欢的记住我功能) =================
+# ================= 2. 登录系统 =================
 query_params = st.query_params
 url_token = query_params.get("token", None)
 
@@ -83,7 +85,7 @@ if not st.session_state.logged_in:
             st.error("密码错误")
 
 else:
-    # ================= 3. 主系统 (含侧边栏切换) =================
+    # ================= 3. 主界面 =================
     current_uid = st.session_state.user_uid
     if current_uid not in config["users"]:
         st.session_state.logged_in = False
@@ -94,18 +96,12 @@ else:
     current_name = current_user_info["name"]
     is_admin = (current_user_info.get("role") == "admin")
 
-    # --- 左侧菜单 (这就是新加的墙) ---
+    # --- 左侧菜单 ---
     with st.sidebar:
         st.title(f"👋 {current_name}")
         
-        # 只有被授权的人才能看到“产品库”选项
-        page_options = ["📦 任务管理"] # 每个人都能看任务
-        
-        # 权限判断：是老板 或者 在白名单里
-        if is_admin or (current_uid in config.get("product_access", [])):
-            page_options.append("💰 产品与成本库") # 新功能入口
-            
-        selected_page = st.radio("切换功能：", page_options)
+        # 任何人都能看任务，但“多平台表格库”需要有权限的表才会显示
+        selected_page = st.radio("切换系统：", ["📦 任务管理", "📊 多平台数据表格库"])
         
         st.divider()
         if st.button("退出登录"):
@@ -114,7 +110,7 @@ else:
             st.query_params.clear()
             st.rerun()
 
-    # ================= 功能 A: 任务管理 (完全保留你喜欢的代码!) =================
+    # ================= 页面 A: 任务管理 (保持原样) =================
     if selected_page == "📦 任务管理":
         try:
             df = pd.read_csv(TASK_DB)
@@ -123,10 +119,9 @@ else:
 
         if is_admin:
             st.title("📊 任务控制台")
-            # 这里就是你熟悉的三个标签页，一点没动
             tab1, tab2, tab3 = st.tabs(["⚡ 每日派单", "🔗 岗位分配", "⚙️ 基础设置"])
             
-            with tab1: # 派单页
+            with tab1:
                 col1, col2 = st.columns([3, 1])
                 with col1:
                     if st.button("⚡ 生成今日任务", type="primary"):
@@ -154,10 +149,8 @@ else:
                          st.rerun()
                 st.dataframe(df, use_container_width=True)
 
-            with tab2: # 灵活分配页 (你最喜欢的)
+            with tab2:
                 st.subheader("🔗 岗位分配")
-                st.caption("逻辑：在这个店铺 -> 指定这个人 -> 做这些事")
-                
                 display_data = []
                 for item in config.get("assignments", []):
                     uid = item["uid"]
@@ -185,10 +178,10 @@ else:
                             if found_uid:
                                 new_assignments.append({"store": row["店铺"], "uid": found_uid, "tasks": row["指令"]})
                     config["assignments"] = new_assignments
-                    save_config(config)
+                    save_config(config, CONFIG_FILE) # 修正保存路径
                     st.success("分配已保存！")
 
-            with tab3: # 设置页 (含产品库权限开关)
+            with tab3:
                 st.subheader("⚙️ 资源管理")
                 c1, c2 = st.columns(2)
                 with c1:
@@ -208,7 +201,7 @@ else:
                             if not uid or pd.isna(uid): uid = f"u_{str(uuid.uuid4())[:8]}"
                             new_users_dict[uid] = {"name": row["姓名"], "pwd": str(row["密码"]), "role": row["角色"]}
                         config["users"] = new_users_dict
-                        save_config(config)
+                        save_config(config, CONFIG_FILE)
                         st.success("人员已更新")
                         st.rerun()
                 
@@ -218,29 +211,10 @@ else:
                     edited_stores = st.data_editor(stores_df, num_rows="dynamic")
                     if st.button("💾 保存店铺"):
                         config["stores"] = [s for s in edited_stores["店铺名称"] if s]
-                        save_config(config)
+                        save_config(config, CONFIG_FILE)
                         st.success("店铺已更新")
-                
-                st.divider()
-                st.subheader("🔒 产品库权限控制")
-                st.info("在这里决定谁能看左侧的【产品与成本库】菜单。")
-                
-                # 权限多选框
-                staff_uids = [uid for uid, info in config["users"].items() if info["role"] != "admin"]
-                current_access = [uid for uid in config.get("product_access", []) if uid in config["users"]]
-                
-                selected_uids = st.multiselect(
-                    "允许以下员工查看产品成本：",
-                    options=staff_uids,
-                    default=current_access,
-                    format_func=lambda x: config["users"][x]["name"]
-                )
-                if st.button("💾 更新查看权限"):
-                    config["product_access"] = selected_uids
-                    save_config(config)
-                    st.success("权限已保存！未选中的员工将看不到入口。")
 
-        else: # 员工界面
+        else: # 员工视图
             st.title(f"📋 {current_name} 的待办")
             my_tasks = df[df["负责人"] == current_name]
             if my_tasks.empty:
@@ -260,30 +234,115 @@ else:
                         else:
                             c3.write(f"已完成 {row['完成时间']}")
 
-    # ================= 功能 B: 产品库 (这是你新加的独立房间) =================
-    elif selected_page == "💰 产品与成本库":
-        st.title("💰 产品与成本库")
-        st.caption("全自由编辑表格：添加货号、成本、供应商信息。Boss 和指定员工可见。")
+    # ================= 页面 B: 📊 多平台数据表格库 (全新逻辑) =================
+    elif selected_page == "📊 多平台数据表格库":
+        st.title("📊 多平台自定义数据库")
+        st.caption("在这里，你可以创建任意结构的表格，并指定谁有权查看。")
         
-        try:
-            prod_df = pd.read_csv(PRODUCT_DB)
-        except:
-            prod_df = pd.DataFrame(columns=["货号", "产品名称", "成本价(CNY)", "售价(USD)", "供应商", "备注"])
+        # 1. 筛选出“我”能看到的表 (Boss看所有，员工看授权)
+        allowed_tables = []
+        for table_name, table_info in tables_db.items():
+            # 权限检查：如果是Boss 或者 自己的ID在白名单里
+            authorized_users = table_info.get("users", [])
+            if is_admin or (current_uid in authorized_users):
+                allowed_tables.append(table_name)
+        
+        # --- 管理员功能：创建新表 ---
+        if is_admin:
+            with st.expander("➕ 创建新表格 (仅老板可见)"):
+                c1, c2 = st.columns([3, 1])
+                new_table_name = c1.text_input("新表格名称 (例如: Temu成本表)")
+                if c2.button("创建"):
+                    if new_table_name and new_table_name not in tables_db:
+                        # 初始化：空数据，空列
+                        tables_db[new_table_name] = {"data": [], "users": []}
+                        save_json(TABLES_FILE, tables_db)
+                        st.success(f"表格 {new_table_name} 创建成功！")
+                        st.rerun()
+                    elif new_table_name in tables_db:
+                        st.error("表格名已存在")
 
-        # 超级表格编辑器
-        edited_prod_df = st.data_editor(
-            prod_df,
-            column_config={
-                "货号": st.column_config.TextColumn(required=True),
-                "成本价(CNY)": st.column_config.NumberColumn(format="¥%.2f"),
-                "售价(USD)": st.column_config.NumberColumn(format="$%.2f"),
-                "备注": st.column_config.TextColumn(width="large")
-            },
-            num_rows="dynamic",
-            use_container_width=True,
-            key="prod_editor"
-        )
-        
-        if st.button("💾 保存产品数据", type="primary"):
-            edited_prod_df.to_csv(PRODUCT_DB, index=False)
-            st.success("产品数据已保存！")
+        # --- 选择要操作的表格 ---
+        if not allowed_tables:
+            st.info("暂无可见表格，请联系老板创建。")
+        else:
+            selected_table = st.selectbox("选择表格：", allowed_tables)
+            
+            # 获取当前表格的数据
+            current_table_data = tables_db[selected_table].get("data", [])
+            current_table_users = tables_db[selected_table].get("users", [])
+            
+            # 转为 DataFrame
+            df_custom = pd.DataFrame(current_table_data)
+
+            # --- 表结构修改 (仅老板) ---
+            if is_admin:
+                with st.expander(f"⚙️ 设置【{selected_table}】的列与权限"):
+                    t1, t2 = st.tabs(["📝 修改列 (表头)", "🔒 设置可见人员"])
+                    
+                    with t1:
+                        st.write("目前列名:", list(df_custom.columns))
+                        col_c1, col_c2 = st.columns([3, 1])
+                        new_col = col_c1.text_input("添加新列名 (例如: 采购价)")
+                        if col_c2.button("添加列"):
+                            if new_col and new_col not in df_custom.columns:
+                                df_custom[new_col] = "" # 给所有行添加这个新列
+                                # 保存
+                                tables_db[selected_table]["data"] = df_custom.to_dict('records')
+                                save_json(TABLES_FILE, tables_db)
+                                st.success(f"列 {new_col} 已添加")
+                                st.rerun()
+                        
+                        # 删除列
+                        del_col = st.selectbox("选择要删除的列", ["(不删除)"] + list(df_custom.columns))
+                        if del_col != "(不删除)" and st.button("⚠️ 确认删除该列"):
+                            df_custom = df_custom.drop(columns=[del_col])
+                            tables_db[selected_table]["data"] = df_custom.to_dict('records')
+                            save_json(TABLES_FILE, tables_db)
+                            st.success(f"列 {del_col} 已删除")
+                            st.rerun()
+
+                    with t2:
+                        all_staff = [u for u in config["users"] if config["users"][u]["role"] != "admin"]
+                        # 转换 UID 为名字显示
+                        selected_staff = st.multiselect(
+                            "谁可以看这个表？(Boss默认可见)",
+                            options=all_staff,
+                            default=[u for u in current_table_users if u in all_staff],
+                            format_func=lambda x: config["users"][x]["name"]
+                        )
+                        if st.button("💾 保存表格权限"):
+                            tables_db[selected_table]["users"] = selected_staff
+                            save_json(TABLES_FILE, tables_db)
+                            st.success("权限已更新！")
+
+                # 删除表格按钮
+                if st.button(f"🗑️ 删除整个表格【{selected_table}】", type="secondary"):
+                    del tables_db[selected_table]
+                    save_json(TABLES_FILE, tables_db)
+                    st.success("表格已删除")
+                    st.rerun()
+
+            st.divider()
+            
+            # --- 核心：自由编辑区域 ---
+            st.subheader(f"📝 {selected_table}")
+            
+            # 只有当有列的时候，才能编辑。如果没有列，提示老板先加列。
+            if df_custom.empty and len(df_custom.columns) == 0:
+                st.warning("这张表还没有任何列（表头）。请老板在上方【设置】里添加列名，比如“产品名”、“成本”等。")
+            else:
+                edited_df = st.data_editor(
+                    df_custom,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key=f"editor_{selected_table}"
+                )
+                
+                if st.button("💾 保存数据", type="primary"):
+                    # 将 DataFrame 转回 json 格式保存
+                    # 替换 NaN 为空字符串，防止 JSON 报错
+                    cleaned_data = edited_df.fillna("").to_dict('records')
+                    tables_db[selected_table]["data"] = cleaned_data
+                    save_json(TABLES_FILE, tables_db)
+                    st.success(f"【{selected_table}】数据已保存！")
