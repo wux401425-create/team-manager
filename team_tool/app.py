@@ -3,111 +3,140 @@ import pandas as pd
 from datetime import datetime
 import os
 import json
+import uuid
 
-# ================= 1. 核心配置管理 =================
-CONFIG_FILE = "config_v3.json"
+# ================= 1. 核心配置与数据结构 =================
+CONFIG_FILE = "config_v5.json"
 DB_FILE = "tasks.csv"
 
 # 默认配置
 DEFAULT_CONFIG = {
-    # 1. 人员名单
     "users": {
-        "Boss": "123456",
-        "小王": "111",
-        "小李": "222",
-        "小张": "333"
+        "u_boss": {"name": "Boss", "pwd": "666", "role": "admin"},
+        "u_001": {"name": "小王", "pwd": "111", "role": "staff"},
+        "u_002": {"name": "小李", "pwd": "222", "role": "staff"}
     },
-    # 2. 店铺名单
     "stores": ["TikTok店铺-01", "TikTok店铺-02", "TikTok店铺-03", "TikTok店铺-04"],
-    
-    # 3. 万能分配表 (核心升级：不再区分岗位，而是直接记录“谁-在哪个店-做什么”)
-    # 结构：List of dicts
-    "assignments": [
-        {"store": "TikTok店铺-01", "user": "小王", "tasks": "1. 拍摄新品视频\n2. 回复评论"},
-        {"store": "TikTok店铺-01", "user": "小李", "tasks": "1. 处理发货\n2. 检查库存"},
-        {"store": "TikTok店铺-02", "user": "小王", "tasks": "全权负责所有事务"}
-    ]
+    "assignments": []
 }
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
         return DEFAULT_CONFIG
     with open(CONFIG_FILE, "r", encoding='utf-8') as f:
-        config = json.load(f)
-        if "assignments" not in config: config["assignments"] = []
-        return config
+        return json.load(f)
 
 def save_config(config):
     with open(CONFIG_FILE, "w", encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=4)
 
+def get_name_by_id(config, uid):
+    return config["users"].get(uid, {}).get("name", "❌已删除员工")
+
+def get_id_by_name(config, name):
+    for uid, info in config["users"].items():
+        if info["name"] == name:
+            return uid
+    return None
+
 config = load_config()
+
 if not os.path.exists(DB_FILE):
     pd.DataFrame(columns=["日期", "店铺", "负责人", "任务内容", "状态", "完成时间"]).to_csv(DB_FILE, index=False)
 
-st.set_page_config(page_title="吴先生团队管理系统 Flexible", layout="wide")
+st.set_page_config(page_title="吴先生团队系统 (完全体)", layout="wide")
 
-# ================= 2. 登录逻辑 =================
+# ================= 2. 登录系统 =================
+query_params = st.query_params
+url_token = query_params.get("token", None)
+
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+    st.session_state.user_uid = None
+
+if not st.session_state.logged_in and url_token:
+    if url_token in config["users"]:
+        st.session_state.logged_in = True
+        st.session_state.user_uid = url_token
+        st.toast(f"欢迎回来，{config['users'][url_token]['name']}")
 
 if not st.session_state.logged_in:
-    st.title("🚀 团队任务管理系统 (灵活版)")
-    user = st.selectbox("选择角色", list(config["users"].keys()))
+    st.title("合泰包装盒有限公司")
+    user_names = [info["name"] for uid, info in config["users"].items()]
+    selected_name = st.selectbox("选择角色", user_names)
     pwd = st.text_input("密码", type="password")
+    remember_me = st.checkbox("✅ 记住我 (刷新免登录)")
+
     if st.button("登录", type="primary"):
-        if config["users"].get(user) == pwd:
+        uid = get_id_by_name(config, selected_name)
+        if uid and config["users"][uid]["pwd"] == pwd:
             st.session_state.logged_in = True
-            st.session_state.user = user
+            st.session_state.user_uid = uid
+            if remember_me:
+                st.query_params["token"] = uid
             st.rerun()
         else:
             st.error("密码错误")
 
 else:
-    # ================= 3. 主界面 =================
-    current_user = st.session_state.user
+    # ================= 3. 主工作台 =================
+    current_uid = st.session_state.user_uid
+    if current_uid not in config["users"]:
+        st.session_state.logged_in = False
+        st.query_params.clear()
+        st.rerun()
+
+    current_user_info = config["users"][current_uid]
+    current_name = current_user_info["name"]
+    is_admin = (current_user_info.get("role") == "admin")
+
     with st.sidebar:
-        st.title(f"👋 {current_user}")
-        if st.button("退出"):
+        st.title(f"👋 {current_name}")
+        if st.button("退出登录"):
             st.session_state.logged_in = False
+            st.session_state.user_uid = None
+            st.query_params.clear()
             st.rerun()
-            
+
     try:
         df = pd.read_csv(DB_FILE)
     except:
         df = pd.DataFrame(columns=["日期", "店铺", "负责人", "任务内容", "状态", "完成时间"])
 
-    # ------------------ Boss 专属 ------------------
-    if current_user == "Boss":
-        tab1, tab2, tab3 = st.tabs(["📊 任务看板", "🔗 岗位与人员分配", "⚙️ 基础设置"])
+    if is_admin:
+        tab1, tab2, tab3 = st.tabs(["📊 任务控制台", "🔗 灵活分配表", "⚙️ 人员与店铺管理"])
         
-        # --- Tab 1: 任务发布 ---
+        # === Tab 1: 任务发布 ===
         with tab1:
-            st.subheader("1️⃣ 一键发布")
-            st.caption("系统会遍历【岗位与人员分配】表中的每一行，自动生成任务。")
-            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.subheader("1️⃣ 每日一键派单")
+                st.caption("系统会自动过滤掉已删除的店铺或员工，只生成有效的任务。")
+            with col2:
+                 if st.button("🗑️ 清空历史记录"):
+                     pd.DataFrame(columns=["日期", "店铺", "负责人", "任务内容", "状态", "完成时间"]).to_csv(DB_FILE, index=False)
+                     st.rerun()
+
             if st.button("⚡ 生成今日任务", type="primary"):
                 today = datetime.now().strftime("%Y-%m-%d")
                 new_rows = []
                 count = 0
                 
-                # 遍历万能分配表
                 for item in config.get("assignments", []):
-                    # 确保人还没被删
-                    if item["user"] in config["users"]:
-                        # 将多行任务拆解
-                        task_text = item.get("tasks", "")
-                        # 按换行符拆分，如果有序号也支持
-                        task_lines = [t.strip() for t in task_text.split('\n') if t.strip()]
+                    # 智能防错 1: 检查店铺是否还存在
+                    if item["store"] not in config["stores"]:
+                        continue # 如果店铺被删了，跳过任务生成
+                    
+                    # 智能防错 2: 检查人是否还存在
+                    assigned_uid = item["uid"]
+                    if assigned_uid in config["users"]:
+                        real_name = config["users"][assigned_uid]["name"]
                         
+                        task_lines = [t.strip() for t in item.get("tasks", "").split('\n') if t.strip()]
                         for t in task_lines:
                             new_rows.append({
-                                "日期": today,
-                                "店铺": item["store"],
-                                "负责人": item["user"],
-                                "任务内容": t,
-                                "状态": "进行中",
-                                "完成时间": "-"
+                                "日期": today, "店铺": item["store"], "负责人": real_name,
+                                "任务内容": t, "状态": "进行中", "完成时间": "-"
                             })
                             count += 1
                 
@@ -115,19 +144,17 @@ else:
                     new_df = pd.DataFrame(new_rows)
                     df = pd.concat([df, new_df], ignore_index=True)
                     df.to_csv(DB_FILE, index=False)
-                    st.success(f"成功发布 {count} 条任务！")
+                    st.success(f"发布成功！已生成 {count} 条有效任务。")
                     st.rerun()
                 else:
-                    st.warning("分配表是空的，快去 Tab 2 设置吧！")
+                    st.warning("没有可生成的任务，请检查分配表或店铺/人员名单。")
 
             st.divider()
-            
-            # 手动发布
-            with st.expander("➕ 临时任务"):
+            with st.expander("➕ 发布临时任务"):
                 c1, c2, c3 = st.columns(3)
                 with c1: t_store = st.selectbox("店铺", config["stores"])
-                with c2: t_user = st.selectbox("给谁", [u for u in config["users"].keys() if u != "Boss"])
-                with c3: t_text = st.text_input("做什么")
+                with c2: t_user = st.selectbox("给谁", [u["name"] for k,u in config["users"].items() if u["role"] != "admin"])
+                with c3: t_text = st.text_input("任务内容")
                 if st.button("发布"):
                     new_row = {"日期": datetime.now().strftime("%Y-%m-%d"), "店铺": t_store, 
                                "负责人": t_user, "任务内容": t_text, "状态": "进行中", "完成时间": "-"}
@@ -135,81 +162,93 @@ else:
                     df.to_csv(DB_FILE, index=False)
                     st.success("发布成功")
                     st.rerun()
-            
-            st.subheader("📋 进度表")
-            if st.button("🗑️ 清空历史"):
-                 pd.DataFrame(columns=["日期", "店铺", "负责人", "任务内容", "状态", "完成时间"]).to_csv(DB_FILE, index=False)
-                 st.rerun()
             st.dataframe(df, use_container_width=True)
 
-        # --- Tab 2: 万能分配表 (核心修改) ---
+        # === Tab 2: 灵活分配表 ===
         with tab2:
-            st.header("🔗 岗位分配中心")
-            st.info("逻辑：选择一个店铺 -> 链接一个员工 -> 写下在这个店他要做的事。")
-            st.caption("提示：你可以给同一个店添加多行（分配给不同人），也可以给同一个人添加多行（管多个店）。")
+            st.header("🔗 岗位分配")
+            st.info("💡 提示：如需删除某条分配，选中该行左侧，按键盘 Delete 键，然后点击保存。")
             
-            # 准备数据供编辑
-            current_assignments = config.get("assignments", [])
-            assign_df = pd.DataFrame(current_assignments)
+            display_data = []
+            for item in config.get("assignments", []):
+                uid = item["uid"]
+                # 如果员工被删了，这里会显示 "❌已删除员工"，提示你这条分配失效了
+                name = get_name_by_id(config, uid)
+                display_data.append({"店铺": item["store"], "员工": name, "指令": item["tasks"]})
             
-            # 如果是空的，初始化列
-            if assign_df.empty:
-                assign_df = pd.DataFrame(columns=["store", "user", "tasks"])
-
-            # 动态表格编辑器
             edited_df = st.data_editor(
-                assign_df,
+                pd.DataFrame(display_data),
                 column_config={
-                    "store": st.column_config.SelectboxColumn("店铺", options=config["stores"], required=True, width="medium"),
-                    "user": st.column_config.SelectboxColumn("员工", options=[u for u in config["users"] if u!="Boss"], required=True, width="medium"),
-                    "tasks": st.column_config.TextColumn("工作指令 (可换行)", required=True, width="large", help="在这个店具体要做什么？比如：1.拍视频 2.发货")
+                    "店铺": st.column_config.SelectboxColumn(options=config["stores"], required=True),
+                    "员工": st.column_config.SelectboxColumn(options=[u["name"] for k,u in config["users"].items() if u["role"]!="admin"], required=True),
+                    "指令": st.column_config.TextColumn(width="large")
                 },
-                num_rows="dynamic", # 允许添加/删除行
-                use_container_width=True,
-                key="assign_editor"
+                num_rows="dynamic",
+                use_container_width=True
             )
-            
+
             if st.button("💾 保存分配关系"):
-                # 转换回 json 格式
                 new_assignments = []
                 for index, row in edited_df.iterrows():
-                    if row["store"] and row["user"]: # 过滤空行
-                        new_assignments.append({
-                            "store": row["store"],
-                            "user": row["user"],
-                            "tasks": row["tasks"]
-                        })
+                    if row["店铺"] and row["员工"]:
+                        found_uid = get_id_by_name(config, row["员工"])
+                        if found_uid:
+                            new_assignments.append({"store": row["店铺"], "uid": found_uid, "tasks": row["指令"]})
                 config["assignments"] = new_assignments
                 save_config(config)
                 st.success("分配已保存！")
 
-        # --- Tab 3: 基础设置 ---
+        # === Tab 3: 人员与店铺管理 (含删除功能) ===
         with tab3:
-            st.header("⚙️ 资源管理")
+            st.header("⚙️ 资源管理 (增/删/改)")
+            
             c1, c2 = st.columns(2)
             with c1:
-                st.subheader("人员名单")
-                users_df = pd.DataFrame(list(config["users"].items()), columns=["用户名", "密码"])
-                edited_users = st.data_editor(users_df, num_rows="dynamic")
-                if st.button("保存人员"):
-                    config["users"] = dict(zip(edited_users["用户名"], edited_users["密码"]))
+                st.subheader("👥 人员名单")
+                st.info("💡 选中行并按 Delete 键可删除离职员工")
+                
+                users_list = []
+                for uid, info in config["users"].items():
+                    users_list.append({"ID (系统自动)": uid, "姓名": info["name"], "密码": info["pwd"], "角色": info["role"]})
+                
+                edited_users = st.data_editor(
+                    pd.DataFrame(users_list),
+                    column_config={
+                        "ID (系统自动)": st.column_config.TextColumn(disabled=True),
+                        "角色": st.column_config.SelectboxColumn(options=["admin", "staff"])
+                    },
+                    num_rows="dynamic", # 允许增删
+                    key="user_edit"
+                )
+                
+                if st.button("💾 保存人员变更"):
+                    new_users_dict = {}
+                    for index, row in edited_users.iterrows():
+                        uid = row["ID (系统自动)"]
+                        if not uid or pd.isna(uid):
+                            uid = f"u_{str(uuid.uuid4())[:8]}"
+                        new_users_dict[uid] = {"name": row["姓名"], "pwd": str(row["密码"]), "role": row["角色"]}
+                    
+                    config["users"] = new_users_dict
                     save_config(config)
-                    st.success("已更新")
+                    st.success("人员名单已更新！")
+                    st.rerun()
+
             with c2:
-                st.subheader("店铺名单")
+                st.subheader("🏪 店铺名单")
+                st.info("💡 选中行并按 Delete 键可删除闭店店铺")
                 stores_df = pd.DataFrame(config["stores"], columns=["店铺名称"])
                 edited_stores = st.data_editor(stores_df, num_rows="dynamic")
-                if st.button("保存店铺"):
+                if st.button("💾 保存店铺列表"):
                     config["stores"] = [s for s in edited_stores["店铺名称"] if s]
                     save_config(config)
-                    st.success("已更新")
+                    st.success("店铺列表已更新！")
 
-    # ------------------ 员工界面 ------------------
     else:
-        st.header(f"📋 {current_user} 的工作台")
-        my_tasks = df[df["负责人"] == current_user]
+        st.header(f"📋 {current_name} 的工作台")
+        my_tasks = df[df["负责人"] == current_name]
         if my_tasks.empty:
-            st.info("暂无任务")
+            st.info("今日暂无任务")
         else:
             for index, row in my_tasks.iterrows():
                 with st.container(border=True):
