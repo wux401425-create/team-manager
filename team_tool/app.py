@@ -237,7 +237,7 @@ else:
 
             with c2:
                 st.subheader("🏪 店铺名单")
-                st.info("💡 选中行左侧复选框，按 Delete 键可删除店铺")
+                st.info("选中行左侧复选框，按 Delete 键可删除店铺")
                 stores_df = pd.DataFrame(config["stores"], columns=["店铺名称"])
                 edited_stores = st.data_editor(stores_df, num_rows="dynamic")
                 if st.button("💾 保存店铺列表"):
@@ -264,6 +264,7 @@ else:
                             st.rerun()
                     else:
                         c3.write(f"已完成 {row['完成时间']}")
+
 
 
 
