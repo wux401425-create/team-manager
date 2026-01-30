@@ -44,7 +44,7 @@ config = load_config()
 if not os.path.exists(DB_FILE):
     pd.DataFrame(columns=["日期", "店铺", "负责人", "任务内容", "状态", "完成时间"]).to_csv(DB_FILE, index=False)
 
-st.set_page_config(page_title="吴先生团队系统 (完全体)", layout="wide")
+st.set_page_config(page_title="吴先生团队系统 (修复版)", layout="wide")
 
 # ================= 2. 登录系统 =================
 query_params = st.query_params
@@ -61,7 +61,7 @@ if not st.session_state.logged_in and url_token:
         st.toast(f"欢迎回来，{config['users'][url_token]['name']}")
 
 if not st.session_state.logged_in:
-    st.title("合泰包装盒有限公司")
+    st.title("🚀 团队任务管理系统")
     user_names = [info["name"] for uid, info in config["users"].items()]
     selected_name = st.selectbox("选择角色", user_names)
     pwd = st.text_input("密码", type="password")
@@ -123,15 +123,12 @@ else:
                 count = 0
                 
                 for item in config.get("assignments", []):
-                    # 智能防错 1: 检查店铺是否还存在
                     if item["store"] not in config["stores"]:
-                        continue # 如果店铺被删了，跳过任务生成
+                        continue 
                     
-                    # 智能防错 2: 检查人是否还存在
                     assigned_uid = item["uid"]
                     if assigned_uid in config["users"]:
                         real_name = config["users"][assigned_uid]["name"]
-                        
                         task_lines = [t.strip() for t in item.get("tasks", "").split('\n') if t.strip()]
                         for t in task_lines:
                             new_rows.append({
@@ -164,24 +161,28 @@ else:
                     st.rerun()
             st.dataframe(df, use_container_width=True)
 
-        # === Tab 2: 灵活分配表 ===
+        # === Tab 2: 灵活分配表 (已修复表头显示问题) ===
         with tab2:
             st.header("🔗 岗位分配")
-            st.info("💡 提示：如需删除某条分配，选中该行左侧，按键盘 Delete 键，然后点击保存。")
+            st.info("💡 操作提示：点击下方表格的最后一行（虚线框）来添加新分配。")
             
             display_data = []
             for item in config.get("assignments", []):
                 uid = item["uid"]
-                # 如果员工被删了，这里会显示 "❌已删除员工"，提示你这条分配失效了
                 name = get_name_by_id(config, uid)
                 display_data.append({"店铺": item["store"], "员工": name, "指令": item["tasks"]})
             
+            # 关键修复：确保即使没数据，也有表头
+            df_to_edit = pd.DataFrame(display_data)
+            if df_to_edit.empty:
+                df_to_edit = pd.DataFrame(columns=["店铺", "员工", "指令"])
+
             edited_df = st.data_editor(
-                pd.DataFrame(display_data),
+                df_to_edit,
                 column_config={
                     "店铺": st.column_config.SelectboxColumn(options=config["stores"], required=True),
                     "员工": st.column_config.SelectboxColumn(options=[u["name"] for k,u in config["users"].items() if u["role"]!="admin"], required=True),
-                    "指令": st.column_config.TextColumn(width="large")
+                    "指令": st.column_config.TextColumn(width="large", help="在这里输入具体工作内容")
                 },
                 num_rows="dynamic",
                 use_container_width=True
@@ -198,14 +199,14 @@ else:
                 save_config(config)
                 st.success("分配已保存！")
 
-        # === Tab 3: 人员与店铺管理 (含删除功能) ===
+        # === Tab 3: 人员与店铺管理 ===
         with tab3:
             st.header("⚙️ 资源管理 (增/删/改)")
             
             c1, c2 = st.columns(2)
             with c1:
                 st.subheader("👥 人员名单")
-                st.info("💡 选中行并按 Delete 键可删除离职员工")
+                st.info("💡 选中行左侧复选框，按 Delete 键可删除员工")
                 
                 users_list = []
                 for uid, info in config["users"].items():
@@ -217,7 +218,7 @@ else:
                         "ID (系统自动)": st.column_config.TextColumn(disabled=True),
                         "角色": st.column_config.SelectboxColumn(options=["admin", "staff"])
                     },
-                    num_rows="dynamic", # 允许增删
+                    num_rows="dynamic",
                     key="user_edit"
                 )
                 
@@ -236,7 +237,7 @@ else:
 
             with c2:
                 st.subheader("🏪 店铺名单")
-                st.info("💡 选中行并按 Delete 键可删除闭店店铺")
+                st.info("💡 选中行左侧复选框，按 Delete 键可删除店铺")
                 stores_df = pd.DataFrame(config["stores"], columns=["店铺名称"])
                 edited_stores = st.data_editor(stores_df, num_rows="dynamic")
                 if st.button("💾 保存店铺列表"):
