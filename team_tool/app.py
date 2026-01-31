@@ -23,39 +23,27 @@ def get_db_connection():
         st.error(f"❌ 连接失败: {e}")
         return None
 
-# ⭐ 核心修复：使用 get_all_values 确保即使没数据也能读到表头
 @st.cache_data(ttl=5)
 def load_data(tab_name, default_cols=[]):
     sh = get_db_connection()
     if not sh: return pd.DataFrame(columns=default_cols)
     try:
         worksheet = sh.worksheet(tab_name)
-        # 改用 get_all_values 读取原始数据（包含表头）
         raw_data = worksheet.get_all_values()
+        if not raw_data: return pd.DataFrame(columns=default_cols)
         
-        if not raw_data:
-            # 真正的空表
-            return pd.DataFrame(columns=default_cols)
-            
-        headers = raw_data[0] # 第一行是表头
-        rows = raw_data[1:]   # 后面是数据
-        
-        # 如果有数据
+        headers = raw_data[0]
+        rows = raw_data[1:]
         if rows:
             df = pd.DataFrame(rows, columns=headers)
         else:
-            # 只有表头，没有数据
             df = pd.DataFrame(columns=headers)
             
-        # 补全缺失列
         for col in default_cols:
             if col not in df.columns:
                 df[col] = ""
         return df.astype(str)
-        
-    except gspread.WorksheetNotFound:
-        return pd.DataFrame(columns=default_cols)
-    except Exception as e:
+    except:
         return pd.DataFrame(columns=default_cols)
 
 def save_data(tab_name, df):
@@ -66,30 +54,30 @@ def save_data(tab_name, df):
             worksheet = sh.worksheet(tab_name)
         except gspread.WorksheetNotFound:
             worksheet = sh.add_worksheet(title=tab_name, rows=100, cols=20)
-        
         worksheet.clear()
-        # 写入 DataFrame (含表头)
         if df.empty:
              worksheet.update([df.columns.values.tolist()])
         else:
-             # 将所有数据转为字符串写入，防止格式错误
              clean_df = df.astype(str)
              worksheet.update([clean_df.columns.values.tolist()] + clean_df.values.tolist())
-             
         load_data.clear()
         return True
     except Exception as e:
         st.error(f"❌ 保存失败: {e}")
         return False
 
-# 读取模板设置
+# 辅助函数：安全转数字
+def try_float(x):
+    try:
+        return float(str(x).replace('¥','').replace('$','').replace(',','').strip())
+    except:
+        return 0.0
+
 def get_template_cols():
     df = load_data("System_Template", ["列名"])
-    if df.empty:
-        return ["货号", "产品名称", "图片链接", "成本", "售价", "供应商", "备注"]
+    if df.empty: return ["货号", "产品名称", "图片链接", "成本", "售价", "供应商", "备注"]
     return df["列名"].tolist()
 
-# 权限管理
 def get_permissions():
     df = load_data("Permissions", ["table_name", "allowed_uids"])
     perms = {}
@@ -105,14 +93,34 @@ def save_permissions(table_name, uid_list):
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     save_data("Permissions", df)
 
+def get_id_by_name(users_df, name):
+    if users_df.empty: return None
+    row = users_df[users_df["name"] == name]
+    if not row.empty: return row.iloc[0]["uid"]
+    return None
+
 # ================= 2. 初始配置 =================
 DEFAULT_USERS = [{"uid": "u_boss", "name": "Boss", "pwd": "666", "role": "admin"}]
 
 st.set_page_config(page_title="Boss系统", layout="wide")
 
-# ================= 3. 登录逻辑 =================
+# ================= 3. 登录逻辑 (修复记住我功能) =================
+# 检查 URL 是否有 token
+query_params = st.query_params
+url_token = query_params.get("token", None)
+
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+
+# 自动登录逻辑
+if not st.session_state.logged_in and url_token:
+    users_df = load_data("Users", ["uid", "name", "pwd", "role"])
+    if not users_df.empty:
+        user_row = users_df[users_df["uid"] == url_token]
+        if not user_row.empty:
+            st.session_state.logged_in = True
+            st.session_state.user_info = user_row.iloc[0].to_dict()
+            st.toast(f"👋 欢迎回来, {st.session_state.user_info['name']}")
 
 if not st.session_state.logged_in:
     st.title("🚀 团队协作系统")
@@ -128,12 +136,18 @@ if not st.session_state.logged_in:
     with c1:
         selected_name = st.selectbox("账号", name_list)
         pwd = st.text_input("密码", type="password")
+        # ⭐ 新增：记住我复选框
+        remember_me = st.checkbox("✅ 记住我 (下次免登录)")
+        
         if st.button("登录", type="primary"):
             if not users_df.empty:
                 user_row = users_df[users_df["name"] == selected_name].iloc[0]
                 if str(user_row["pwd"]) == pwd:
                     st.session_state.logged_in = True
                     st.session_state.user_info = user_row.to_dict()
+                    # 如果勾选记住我，把 token 写入 URL
+                    if remember_me:
+                        st.query_params["token"] = user_row["uid"]
                     st.rerun()
                 else:
                     st.error("密码错误")
@@ -183,17 +197,17 @@ else:
         st.divider()
         if st.button("退出"):
             st.session_state.logged_in = False
+            st.query_params.clear() # 退出时清除 token
             st.rerun()
 
-    # --- 模块 A: 全局设置 ---
+    # --- 模块: 全局设置 ---
     if selected_page == "⚙️ 全局系统设置":
         st.header("⚙️ 全局系统设置")
         t1, t2 = st.tabs(["📝 表格默认模板", "👥 人员管理"])
         with t1:
-            st.caption("修改这里，以后【新建表格】都会默认带上这些列：")
+            st.caption("以后【新建表格】会默认带上这些列：")
             current_cols = get_template_cols()
-            df_tpl = pd.DataFrame({"列名": current_cols})
-            edited_tpl = st.data_editor(df_tpl, num_rows="dynamic", use_container_width=True)
+            edited_tpl = st.data_editor(pd.DataFrame({"列名": current_cols}), num_rows="dynamic", use_container_width=True)
             if st.button("💾 保存模板"):
                 new_col_list = [r["列名"] for r in edited_tpl.to_dict('records') if r["列名"]]
                 save_data("System_Template", pd.DataFrame({"列名": new_col_list}))
@@ -208,7 +222,7 @@ else:
                 st.success("人员已更新")
                 st.rerun()
 
-    # --- 模块 B: 任务管理 ---
+    # --- 模块: 任务管理 ---
     elif selected_page == "📦 任务管理":
         st.subheader("📋 任务中心")
         tasks_df = load_data("Tasks", ["date", "store", "user", "task", "status", "time"])
@@ -238,9 +252,47 @@ else:
 
             st.dataframe(tasks_df, use_container_width=True)
             with st.expander("🔗 设置岗位分配"):
-                edited_assign = st.data_editor(assign_df, num_rows="dynamic", use_container_width=True)
+                # 优化分配表显示：将 UID 转为 名字 显示
+                users_df = load_data("Users", ["uid", "name"])
+                uid_map = dict(zip(users_df["uid"], users_df["name"]))
+                name_map = dict(zip(users_df["name"], users_df["uid"]))
+                
+                assign_display = assign_df.copy()
+                # 如果有数据，把 uid 替换成 名字
+                if not assign_display.empty and "uid" in assign_display.columns:
+                     assign_display["员工"] = assign_display["uid"].map(uid_map).fillna("未知")
+                     # 移除 uid 列只显示名字
+                     if "uid" in assign_display.columns:
+                         assign_display = assign_display.drop(columns=["uid"])
+                else:
+                    assign_display["员工"] = ""
+
+                # 确保有列
+                if "store" not in assign_display.columns: assign_display["store"] = ""
+                if "tasks" not in assign_display.columns: assign_display["tasks"] = ""
+
+                edited_assign = st.data_editor(
+                    assign_display, 
+                    column_config={
+                        "员工": st.column_config.SelectboxColumn("员工", options=users_df["name"].tolist(), required=True),
+                        "store": st.column_config.TextColumn("店铺"),
+                        "tasks": st.column_config.TextColumn("任务内容")
+                    },
+                    num_rows="dynamic", 
+                    use_container_width=True
+                )
+                
                 if st.button("💾 保存分配"):
-                    save_data("Assignments", edited_assign)
+                    # 保存时把 名字 转回 UID
+                    save_rows = []
+                    for idx, row in edited_assign.iterrows():
+                        if row["员工"] and row["员工"] in name_map:
+                            save_rows.append({
+                                "store": row["store"],
+                                "uid": name_map[row["员工"]],
+                                "tasks": row["tasks"]
+                            })
+                    save_data("Assignments", pd.DataFrame(save_rows))
                     st.success("保存成功")
         else:
             my_tasks = tasks_df[tasks_df["user"] == user["name"]]
@@ -261,72 +313,100 @@ else:
             else:
                 st.info("暂无任务")
 
-    # --- 模块 C: 自定义表格 (含导入功能) ---
+    # --- 模块: 自定义表格 (含导入 + 计算) ---
     elif selected_page.startswith("📊"):
         tab_name = selected_page.replace("📊 ", "")
         st.subheader(f"📝 {tab_name}")
         
         df = load_data(tab_name)
         
-        # ⭐⭐⭐ 新增：Excel 导入区 ⭐⭐⭐
+        # 1. 导入功能
         if is_admin:
-            with st.expander("📤 导入 Excel / CSV 数据 (点击展开)"):
-                st.caption("提示：上传的文件将直接覆盖当前表格内容，请确保第一行是列名。")
-                uploaded_file = st.file_uploader("选择文件", type=['xlsx', 'csv'])
+            with st.expander("📤 导入 Excel / CSV (点击展开)"):
+                uploaded_file = st.file_uploader("覆盖当前表格", type=['xlsx', 'csv'])
                 if uploaded_file is not None:
-                    if st.button("🚀 确认导入并覆盖"):
+                    if st.button("🚀 确认导入"):
                         try:
-                            if uploaded_file.name.endswith('.csv'):
-                                import_df = pd.read_csv(uploaded_file)
-                            else:
-                                import_df = pd.read_excel(uploaded_file)
-                            
-                            # 强制转为字符，防止兼容性问题
-                            import_df = import_df.astype(str)
-                            
-                            if save_data(tab_name, import_df):
-                                st.success(f"成功导入 {len(import_df)} 行数据！")
+                            if uploaded_file.name.endswith('.csv'): import_df = pd.read_csv(uploaded_file)
+                            else: import_df = pd.read_excel(uploaded_file)
+                            if save_data(tab_name, import_df.astype(str)):
+                                st.success("导入成功！")
                                 st.rerun()
                         except Exception as e:
-                            st.error(f"导入失败: {e}。请确保 Requirements.txt 里加了 openpyxl")
+                            st.error(f"导入失败: {e} (请检查 requirements.txt 是否添加了 openpyxl)")
 
-        # 数据编辑区
-        # 修复逻辑：只要 df 不是 None，就显示编辑器，哪怕是空表也能看见列头
-        edited_df = st.data_editor(
-            df, 
-            num_rows="dynamic", 
-            use_container_width=True,
-            key=f"editor_{tab_name}"
-        )
+        # 2. ⭐⭐⭐ 新增：智能列计算器 ⭐⭐⭐
+        with st.expander("🧮 批量计算 (例如：利润 = 售价 - 成本)"):
+            c_cal1, c_cal2, c_cal3, c_cal4 = st.columns([2, 1, 2, 2])
+            
+            # 获取所有列名
+            cols = list(df.columns)
+            
+            with c_cal1:
+                col_a = st.selectbox("选择列 A", cols, key="cal_a")
+            with c_cal2:
+                op = st.selectbox("运算", ["+", "-", "*", "/"], key="cal_op")
+            with c_cal3:
+                # 可以选列，也可以手动输入数字
+                col_b_mode = st.radio("列 B 来源", ["选择列", "输入数字"], horizontal=True)
+                if col_b_mode == "选择列":
+                    col_b = st.selectbox("选择列 B", cols, key="cal_b")
+                    val_b = None
+                else:
+                    val_b = st.number_input("输入数字", value=1.0, key="cal_val_b")
+                    col_b = None
+            with c_cal4:
+                # 结果存到哪
+                res_col = st.text_input("结果存入新列名", value="计算结果")
+                
+            if st.button("🧮 开始计算"):
+                try:
+                    # 转换数据类型为数字进行计算
+                    nums_a = df[col_a].apply(try_float)
+                    
+                    if col_b:
+                        nums_b = df[col_b].apply(try_float)
+                    else:
+                        nums_b = val_b
+                        
+                    if op == "+": res = nums_a + nums_b
+                    elif op == "-": res = nums_a - nums_b
+                    elif op == "*": res = nums_a * nums_b
+                    elif op == "/": res = nums_a / nums_b
+                    
+                    # 存回 DataFrame (保留2位小数)
+                    df[res_col] = res.round(2).astype(str)
+                    save_data(tab_name, df)
+                    st.success(f"计算完成！结果已存入【{res_col}】")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"计算出错: {e}")
+
+        # 3. 编辑区
+        edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True, key=f"editor_{tab_name}")
         
         c1, c2 = st.columns([4, 1])
         with c1:
             if st.button("💾 保存表格数据", type="primary"):
                 save_data(tab_name, edited_df)
-                st.success("已同步到 Google 云端")
+                st.success("已保存")
         
         if is_admin:
             with c2:
-                with st.popover("🗑️ 删除"):
-                    st.write("确定删除吗？")
-                    if st.button("确认删除"):
-                        sh = get_db_connection()
-                        ws = sh.worksheet(tab_name)
-                        sh.del_worksheet(ws)
-                        load_data.clear()
-                        st.rerun()
+                if st.button("🗑️ 删除此表"):
+                     sh = get_db_connection()
+                     sh.del_worksheet(sh.worksheet(tab_name))
+                     load_data.clear()
+                     st.rerun()
 
-    # --- 侧边栏底部：新建表格 ---
     if is_admin and selected_page != "⚙️ 全局系统设置":
         with st.sidebar:
             st.divider()
-            with st.expander("➕ 新建 Excel 表格"):
+            with st.expander("➕ 新建表格"):
                 new_name = st.text_input("表名")
                 if st.button("创建"):
                     if new_name and new_name not in all_tabs:
                         tpl_cols = get_template_cols()
                         df_init = pd.DataFrame(columns=tpl_cols)
                         save_data(new_name, df_init)
-                        st.toast("创建成功！")
-                        time.sleep(1)
                         st.rerun()
