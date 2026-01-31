@@ -5,6 +5,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import uuid
 import time
+import io
 
 # ================= 1. 核心引擎 =================
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
@@ -22,22 +23,39 @@ def get_db_connection():
         st.error(f"❌ 连接失败: {e}")
         return None
 
+# ⭐ 核心修复：使用 get_all_values 确保即使没数据也能读到表头
 @st.cache_data(ttl=5)
 def load_data(tab_name, default_cols=[]):
     sh = get_db_connection()
     if not sh: return pd.DataFrame(columns=default_cols)
     try:
         worksheet = sh.worksheet(tab_name)
-        data = worksheet.get_all_records()
-        df = pd.DataFrame(data)
+        # 改用 get_all_values 读取原始数据（包含表头）
+        raw_data = worksheet.get_all_values()
+        
+        if not raw_data:
+            # 真正的空表
+            return pd.DataFrame(columns=default_cols)
+            
+        headers = raw_data[0] # 第一行是表头
+        rows = raw_data[1:]   # 后面是数据
+        
+        # 如果有数据
+        if rows:
+            df = pd.DataFrame(rows, columns=headers)
+        else:
+            # 只有表头，没有数据
+            df = pd.DataFrame(columns=headers)
+            
+        # 补全缺失列
         for col in default_cols:
             if col not in df.columns:
                 df[col] = ""
         return df.astype(str)
+        
     except gspread.WorksheetNotFound:
         return pd.DataFrame(columns=default_cols)
-    except:
-        time.sleep(1)
+    except Exception as e:
         return pd.DataFrame(columns=default_cols)
 
 def save_data(tab_name, df):
@@ -48,30 +66,28 @@ def save_data(tab_name, df):
             worksheet = sh.worksheet(tab_name)
         except gspread.WorksheetNotFound:
             worksheet = sh.add_worksheet(title=tab_name, rows=100, cols=20)
+        
         worksheet.clear()
+        # 写入 DataFrame (含表头)
         if df.empty:
-            worksheet.update([df.columns.values.tolist()])
+             worksheet.update([df.columns.values.tolist()])
         else:
-            worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+             # 将所有数据转为字符串写入，防止格式错误
+             clean_df = df.astype(str)
+             worksheet.update([clean_df.columns.values.tolist()] + clean_df.values.tolist())
+             
         load_data.clear()
         return True
     except Exception as e:
         st.error(f"❌ 保存失败: {e}")
         return False
 
-# --- 新增：专门读取“表格模板”的功能 ---
+# 读取模板设置
 def get_template_cols():
-    # 尝试从 Google 读取配置表
     df = load_data("System_Template", ["列名"])
     if df.empty:
-        # 如果第一次用，没有配置表，就用这套默认的
         return ["货号", "产品名称", "图片链接", "成本", "售价", "供应商", "备注"]
     return df["列名"].tolist()
-
-def save_template_cols(col_list):
-    # 把用户设置的列名保存到 Google
-    df = pd.DataFrame({"列名": col_list})
-    save_data("System_Template", df)
 
 # 权限管理
 def get_permissions():
@@ -137,11 +153,9 @@ else:
         
         pages = ["📦 任务管理"]
         
-        # 自动加载表格
         sh = get_db_connection()
         if sh:
             all_tabs = [ws.title for ws in sh.worksheets()]
-            # 排除系统表
             system_tabs = ["Users", "Tasks", "Assignments", "Permissions", "Settings", "System_Template"]
             custom_tabs = [t for t in all_tabs if t not in system_tabs]
             
@@ -160,7 +174,6 @@ else:
         else:
             all_tabs = []
             
-        # ⭐️ 新增：全局设置入口
         if is_admin:
             st.divider()
             pages.append("⚙️ 全局系统设置")
@@ -172,44 +185,27 @@ else:
             st.session_state.logged_in = False
             st.rerun()
 
-    # --- 模块 A: 全局设置 (这里是你最想要的) ---
+    # --- 模块 A: 全局设置 ---
     if selected_page == "⚙️ 全局系统设置":
         st.header("⚙️ 全局系统设置")
-        st.info("在这里修改配置，无需再改代码！")
-        
-        tab_tpl, tab_user = st.tabs(["📝 表格默认模板", "👥 人员管理"])
-        
-        with tab_tpl:
-            st.subheader("设置新建表格的默认列")
-            st.caption("以后每次【新建表格】，都会自动包含下面这些列：")
-            
-            # 读取当前模板
+        t1, t2 = st.tabs(["📝 表格默认模板", "👥 人员管理"])
+        with t1:
+            st.caption("修改这里，以后【新建表格】都会默认带上这些列：")
             current_cols = get_template_cols()
-            # 转成 DataFrame 方便编辑
             df_tpl = pd.DataFrame({"列名": current_cols})
-            
-            edited_tpl = st.data_editor(
-                df_tpl, 
-                num_rows="dynamic", 
-                use_container_width=True,
-                key="tpl_editor"
-            )
-            
-            if st.button("💾 保存模板设置"):
-                # 提取列名列表
+            edited_tpl = st.data_editor(df_tpl, num_rows="dynamic", use_container_width=True)
+            if st.button("💾 保存模板"):
                 new_col_list = [r["列名"] for r in edited_tpl.to_dict('records') if r["列名"]]
-                save_template_cols(new_col_list)
-                st.success("✅ 模板已更新！下次新建表格时生效。")
-
-        with tab_user:
-            st.subheader("系统人员管理")
+                save_data("System_Template", pd.DataFrame({"列名": new_col_list}))
+                st.success("模板已更新")
+        with t2:
             u_df = load_data("Users", ["uid", "name", "pwd", "role"])
             ed_u = st.data_editor(u_df, num_rows="dynamic")
-            if st.button("💾 保存人员名单"):
+            if st.button("💾 保存人员"):
                 for i in range(len(ed_u)):
                     if not ed_u.iloc[i]["uid"]: ed_u.at[i, "uid"] = f"u_{str(uuid.uuid4())[:6]}"
                 save_data("Users", ed_u)
-                st.success("已更新")
+                st.success("人员已更新")
                 st.rerun()
 
     # --- 模块 B: 任务管理 ---
@@ -241,8 +237,7 @@ else:
                      st.rerun()
 
             st.dataframe(tasks_df, use_container_width=True)
-            
-            with st.expander("🔗 设置岗位分配 (谁 -> 哪个店 -> 做什么)"):
+            with st.expander("🔗 设置岗位分配"):
                 edited_assign = st.data_editor(assign_df, num_rows="dynamic", use_container_width=True)
                 if st.button("💾 保存分配"):
                     save_data("Assignments", edited_assign)
@@ -266,51 +261,62 @@ else:
             else:
                 st.info("暂无任务")
 
-    # --- 模块 C: 自定义表格 (WPS模式) ---
+    # --- 模块 C: 自定义表格 (含导入功能) ---
     elif selected_page.startswith("📊"):
         tab_name = selected_page.replace("📊 ", "")
         st.subheader(f"📝 {tab_name}")
         
         df = load_data(tab_name)
         
-        # 老板创建新表 (放在这里或侧边栏都可以，这里放一个入口)
+        # ⭐⭐⭐ 新增：Excel 导入区 ⭐⭐⭐
         if is_admin:
-            with st.expander("⚙️ 表格操作"):
-                t1, t2 = st.tabs(["修改列/权限", "删除表格"])
-                with t1:
-                    c1, c2 = st.columns([3, 1])
-                    new_col = c1.text_input("加列", key="new_col_input")
-                    if c2.button("添加"):
-                        if new_col and new_col not in df.columns:
-                            df[new_col] = ""
-                            save_data(tab_name, df)
-                            st.rerun()
-                    
-                    # 权限
-                    all_users = load_data("Users", ["uid", "name"])
-                    staffs = all_users[all_users["role"] != "admin"]
-                    perms = get_permissions()
-                    curr = perms.get(tab_name, [])
-                    sel = st.multiselect("可见人员", staffs["uid"].tolist(), default=[u for u in curr if u in staffs["uid"].tolist()], format_func=lambda x: staffs[staffs["uid"]==x]["name"].values[0])
-                    if st.button("保存权限"):
-                        save_permissions(tab_name, sel)
-                        st.success("权限已更新")
-                with t2:
-                    if st.button(f"🗑️ 删除 {tab_name}"):
-                         sh = get_db_connection()
-                         sh.del_worksheet(sh.worksheet(tab_name))
-                         load_data.clear()
-                         st.rerun()
+            with st.expander("📤 导入 Excel / CSV 数据 (点击展开)"):
+                st.caption("提示：上传的文件将直接覆盖当前表格内容，请确保第一行是列名。")
+                uploaded_file = st.file_uploader("选择文件", type=['xlsx', 'csv'])
+                if uploaded_file is not None:
+                    if st.button("🚀 确认导入并覆盖"):
+                        try:
+                            if uploaded_file.name.endswith('.csv'):
+                                import_df = pd.read_csv(uploaded_file)
+                            else:
+                                import_df = pd.read_excel(uploaded_file)
+                            
+                            # 强制转为字符，防止兼容性问题
+                            import_df = import_df.astype(str)
+                            
+                            if save_data(tab_name, import_df):
+                                st.success(f"成功导入 {len(import_df)} 行数据！")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"导入失败: {e}。请确保 Requirements.txt 里加了 openpyxl")
 
-        if not df.empty and len(df.columns) > 0:
-            edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-            if st.button("💾 保存数据", type="primary"):
+        # 数据编辑区
+        # 修复逻辑：只要 df 不是 None，就显示编辑器，哪怕是空表也能看见列头
+        edited_df = st.data_editor(
+            df, 
+            num_rows="dynamic", 
+            use_container_width=True,
+            key=f"editor_{tab_name}"
+        )
+        
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            if st.button("💾 保存表格数据", type="primary"):
                 save_data(tab_name, edited_df)
                 st.success("已同步到 Google 云端")
-        else:
-            st.warning("表格为空")
+        
+        if is_admin:
+            with c2:
+                with st.popover("🗑️ 删除"):
+                    st.write("确定删除吗？")
+                    if st.button("确认删除"):
+                        sh = get_db_connection()
+                        ws = sh.worksheet(tab_name)
+                        sh.del_worksheet(ws)
+                        load_data.clear()
+                        st.rerun()
 
-    # --- 侧边栏底部：新建表格入口 ---
+    # --- 侧边栏底部：新建表格 ---
     if is_admin and selected_page != "⚙️ 全局系统设置":
         with st.sidebar:
             st.divider()
@@ -318,7 +324,6 @@ else:
                 new_name = st.text_input("表名")
                 if st.button("创建"):
                     if new_name and new_name not in all_tabs:
-                        # ⭐️ 核心：读取你在“全局设置”里填写的模板
                         tpl_cols = get_template_cols()
                         df_init = pd.DataFrame(columns=tpl_cols)
                         save_data(new_name, df_init)
