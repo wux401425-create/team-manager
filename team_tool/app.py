@@ -1,15 +1,21 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import uuid
 import time
 import io
 
-# ================= 1. 核心引擎 (汉化与优化) =================
+# ================= 1. 核心引擎 =================
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 SHEET_NAME = "Team_Data_Center" 
+
+# 获取北京时间 (UTC+8)
+def get_beijing_time():
+    utc_now = datetime.utcnow()
+    beijing_now = utc_now + timedelta(hours=8)
+    return beijing_now.strftime("%Y-%m-%d"), beijing_now.strftime("%H:%M")
 
 @st.cache_resource
 def get_db_connection():
@@ -84,7 +90,7 @@ def get_permissions():
 
 def save_permissions(table_name, uid_list):
     df = load_data("Permissions", ["table_name", "allowed_uids"])
-    df = df[df["table_name"] != table_name] # 移除旧的
+    df = df[df["table_name"] != table_name]
     new_row = {"table_name": table_name, "allowed_uids": ",".join(uid_list)}
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     save_data("Permissions", df)
@@ -148,8 +154,12 @@ else:
     user = st.session_state.user_info
     is_admin = (user["role"] == "admin")
     
+    # 获取北京日期
+    bj_date, bj_time = get_beijing_time()
+    
     with st.sidebar:
         st.info(f"👤 {user['name']}")
+        st.caption(f"🕒 北京时间: {bj_time}")
         
         pages = ["📦 任务管理"]
         
@@ -174,8 +184,6 @@ else:
         else:
             all_tabs = []
         
-        # 移除“全局设置”里的模板管理，因为不需要了
-        
         selected_page = st.radio("系统导航", pages)
         
         st.divider()
@@ -190,19 +198,21 @@ else:
         tasks_df = load_data("Tasks", ["date", "store", "user", "task", "status", "time"])
         assign_df = load_data("Assignments", ["store", "uid", "tasks"])
         
+        # 准备人员名单
+        users_df = load_data("Users", ["uid", "name"])
+        name_list_all = users_df["name"].tolist()
+        
         if is_admin:
             c1, c2 = st.columns([3, 1])
             with c1:
-                if st.button("⚡ 生成今日任务", type="primary"):
-                    today = datetime.now().strftime("%Y-%m-%d")
+                if st.button("⚡ 一键生成今日任务 (固定)", type="primary"):
                     new_rows = []
-                    users_df = load_data("Users", ["uid", "name"])
                     for _, row in assign_df.iterrows():
                         u_name_s = users_df[users_df["uid"] == row["uid"]]["name"]
                         if not u_name_s.empty:
                             lines = [t.strip() for t in str(row["tasks"]).split('\n') if t.strip()]
                             for l in lines:
-                                new_rows.append({"date": today, "store": row["store"], "user": u_name_s.values[0], "task": l, "status": "进行中", "time": "-"})
+                                new_rows.append({"date": bj_date, "store": row["store"], "user": u_name_s.values[0], "task": l, "status": "进行中", "time": "-"})
                     if new_rows:
                         save_data("Tasks", pd.concat([tasks_df, pd.DataFrame(new_rows)], ignore_index=True))
                         st.success("发布成功")
@@ -212,9 +222,37 @@ else:
                      save_data("Tasks", pd.DataFrame(columns=tasks_df.columns))
                      st.rerun()
 
-            st.dataframe(tasks_df, use_container_width=True)
+            # ⭐⭐⭐ 修复：临时任务发布窗口 ⭐⭐⭐
+            with st.expander("➕ 发布临时任务 (单条)", expanded=False):
+                c_t1, c_t2, c_t3 = st.columns([1, 1, 2])
+                with c_t1: t_store = st.text_input("店铺名称 (如 Temu)", value="通用")
+                with c_t2: t_user = st.selectbox("指派给", name_list_all)
+                with c_t3: t_content = st.text_input("任务内容")
+                
+                if st.button("发布这条临时任务"):
+                    if t_content:
+                        new_row = {"date": bj_date, "store": t_store, "user": t_user, "task": t_content, "status": "进行中", "time": "-"}
+                        save_data("Tasks", pd.concat([tasks_df, pd.DataFrame([new_row])], ignore_index=True))
+                        st.success("已发布")
+                        st.rerun()
+                    else:
+                        st.warning("请填写任务内容")
+
+            # ⭐⭐⭐ 修复：表格显示汉化 (使用 column_config) ⭐⭐⭐
+            st.dataframe(
+                tasks_df, 
+                use_container_width=True,
+                column_config={
+                    "date": "日期",
+                    "store": "店铺",
+                    "user": "负责人",
+                    "task": "任务内容",
+                    "status": "状态",
+                    "time": "完成时间"
+                }
+            )
             
-            with st.expander("🔗 设置岗位分配 (谁负责哪家店)"):
+            with st.expander("🔗 设置岗位分配 (固定日常任务)"):
                 users_df = load_data("Users", ["uid", "name"])
                 uid_map = dict(zip(users_df["uid"], users_df["name"]))
                 name_map = dict(zip(users_df["name"], users_df["uid"]))
@@ -226,15 +264,12 @@ else:
                 else:
                     assign_display["员工"] = ""
                 
-                if "store" not in assign_display.columns: assign_display["store"] = ""
-                if "tasks" not in assign_display.columns: assign_display["tasks"] = ""
-
                 edited_assign = st.data_editor(
                     assign_display, 
                     column_config={
                         "员工": st.column_config.SelectboxColumn("员工", options=users_df["name"].tolist(), required=True),
                         "store": st.column_config.TextColumn("店铺"),
-                        "tasks": st.column_config.TextColumn("任务内容")
+                        "tasks": st.column_config.TextColumn("任务内容 (换行区分多条)")
                     },
                     num_rows="dynamic", 
                     use_container_width=True
@@ -250,7 +285,17 @@ else:
             
             with st.expander("👥 人员名单管理"):
                  u_df = load_data("Users", ["uid", "name", "pwd", "role"])
-                 ed_u = st.data_editor(u_df, num_rows="dynamic")
+                 # ⭐⭐⭐ 修复：人员表汉化 ⭐⭐⭐
+                 ed_u = st.data_editor(
+                     u_df, 
+                     num_rows="dynamic",
+                     column_config={
+                         "uid": st.column_config.TextColumn("用户ID (自动生成)", disabled=True),
+                         "name": "姓名",
+                         "pwd": "密码",
+                         "role": st.column_config.SelectboxColumn("角色", options=["admin", "staff"])
+                     }
+                 )
                  if st.button("💾 保存人员"):
                     for i in range(len(ed_u)):
                         if not ed_u.iloc[i]["uid"]: ed_u.at[i, "uid"] = f"u_{str(uuid.uuid4())[:6]}"
@@ -259,6 +304,7 @@ else:
                     st.rerun()
 
         else:
+            # 员工端
             my_tasks = tasks_df[tasks_df["user"] == user["name"]]
             if not my_tasks.empty:
                 for idx, row in my_tasks.iterrows():
@@ -269,7 +315,8 @@ else:
                         if row['status'] == "进行中":
                             if c3.button("✅ 打卡", key=f"dka_{idx}"):
                                 tasks_df.at[idx, "status"] = "完成"
-                                tasks_df.at[idx, "time"] = datetime.now().strftime("%H:%M")
+                                # ⭐⭐⭐ 修复：使用北京时间打卡 ⭐⭐⭐
+                                tasks_df.at[idx, "time"] = bj_time
                                 save_data("Tasks", tasks_df)
                                 st.rerun()
                         else:
@@ -277,14 +324,13 @@ else:
             else:
                 st.info("暂无任务")
 
-    # --- 模块: 自定义表格 (核心升级) ---
+    # --- 模块: 自定义表格 (保持完美状态) ---
     elif selected_page.startswith("📊"):
         tab_name = selected_page.replace("📊 ", "")
         st.subheader(f"📝 {tab_name}")
         
         df = load_data(tab_name)
         
-        # 1. 权限管理 (修复：找回丢失的设置)
         if is_admin:
             with st.expander(f"🔒 设置谁能看【{tab_name}】"):
                 all_users = load_data("Users", ["uid", "name"])
@@ -302,36 +348,27 @@ else:
                     save_permissions(tab_name, sel_uids)
                     st.success("权限已保存！")
 
-        # 2. 超级计算器 (升级：函数式)
         with st.expander("🧮 表格超级计算器 (支持函数公式)"):
             st.info("💡 使用 Python 语法计算。例如：计算人民币利润，可以输入 `(售价 * 7.2) - 成本`")
-            
             c_cal1, c_cal2 = st.columns([3, 1])
             with c_cal1:
-                # 智能提示当前有哪些列
                 cols_str = "、".join([f"`{c}`" for c in df.columns])
                 st.caption(f"当前可用列名：{cols_str}")
-                
                 formula = st.text_input("输入计算公式", placeholder="例如: 售价 * 7.2 - 成本")
                 new_col_name = st.text_input("计算结果存入列名", value="计算结果")
                 
             with c_cal2:
-                st.write("") # 占位
+                st.write("") 
                 st.write("") 
                 if st.button("🚀 执行计算"):
                     if not formula:
                         st.warning("请输入公式")
                     else:
                         try:
-                            # 预处理：把列转为数字，无法转换的变0
                             temp_df = df.copy()
                             for col in df.columns:
                                 temp_df[col] = temp_df[col].apply(try_float)
-                            
-                            # 使用 pandas 引擎计算
                             result = temp_df.eval(formula)
-                            
-                            # 存回去
                             df[new_col_name] = result.round(2).astype(str)
                             save_data(tab_name, df)
                             st.success(f"计算完成！结果已存入【{new_col_name}】")
@@ -339,7 +376,6 @@ else:
                         except Exception as e:
                             st.error(f"公式错误: {e}。请检查列名是否写对。")
 
-        # 3. 数据编辑区
         if not df.empty and len(df.columns) > 0:
             edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True, key=f"editor_{tab_name}")
             c_save, c_del = st.columns([4, 1])
@@ -360,7 +396,6 @@ else:
         else:
             st.info("这是一个空表，请使用下方的导入功能。")
 
-        # 4. 导入/覆盖功能 (管理员)
         if is_admin:
             st.divider()
             with st.expander("📤 导入/覆盖数据 (Excel/CSV)"):
@@ -378,16 +413,13 @@ else:
                         except Exception as e:
                             st.error(f"导入失败: {e} (请检查 requirements.txt)")
 
-    # --- 侧边栏：创建表格 (只保留导入/空表模式) ---
     if is_admin:
         with st.sidebar:
             st.divider()
             with st.expander("➕ 创建新表格"):
-                st.caption("输入名字创建一个新表，然后去右侧导入 Excel 数据。")
                 new_name = st.text_input("新表格名称")
                 if st.button("创建"):
                     if new_name and new_name not in all_tabs:
-                        # 创建一个完全空的表，只留一个默认列防止报错
                         df_init = pd.DataFrame(columns=["A"]) 
                         save_data(new_name, df_init)
                         st.toast("✅ 创建成功！请前往导入数据。")
