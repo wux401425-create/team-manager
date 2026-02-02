@@ -110,7 +110,7 @@ def save_permissions(t_name, uids):
     save_data("Permissions", pd.concat([df, pd.DataFrame([new_r])], ignore_index=True))
 
 # ================= 3. 页面主逻辑 =================
-st.set_page_config(page_title="团队协作系统", layout="wide")
+st.set_page_config(page_title="合泰包装盒有限公司", layout="wide")
 
 # 登录状态检查
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
@@ -128,7 +128,7 @@ if not st.session_state.logged_in and token:
 
 # 登录界面
 if not st.session_state.logged_in:
-    st.title("🚀 团队协作系统")
+    st.title("合泰包装盒有限公司")
     u_df = load_data("Users", ["uid", "name", "pwd", "role"])
     if u_df.empty:
         # 初始化 Boss
@@ -140,7 +140,7 @@ if not st.session_state.logged_in:
     with c1:
         s_name = st.selectbox("账号", names)
         pwd = st.text_input("密码", type="password")
-        remember = st.checkbox("✅ 记住我 (免下次登录)")
+        remember = st.checkbox("记住我 (免下次登录)")
         if st.button("登录系统", type="primary"):
             me = u_df[u_df["name"] == s_name].iloc[0]
             if str(me["pwd"]) == pwd:
@@ -160,7 +160,7 @@ else:
         st.info(f"👤 {user['name']} ({'管理员' if is_admin else '员工'})")
         st.caption(f"🕒 北京时间: {bj_time}")
         
-        if st.button("🔄 刷新最新数据", type="primary"):
+        if st.button("刷新最新数据", type="primary"):
             load_data.clear()
             get_all_sheet_titles.clear()
             st.rerun()
@@ -201,7 +201,7 @@ else:
         
         if is_admin:
             # === 管理员视图 ===
-            t1, t2, t3 = st.tabs(["⚡ 派单控制台", "📝 任务记录总表", "👥 人员管理"])
+            t1, t2, t3 = st.tabs(["⚡ 工作台", "📝 任务记录总表", "👥 人员管理"])
             
             with t1:
                 st.markdown("##### 1️⃣ 每日日常任务 (基于岗位配置)")
@@ -384,3 +384,4 @@ else:
                     if nn and nn not in all_tabs:
                         save_data(nn, pd.DataFrame(columns=["A"]))
                         st.rerun()
+
